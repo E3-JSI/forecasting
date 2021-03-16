@@ -143,10 +143,28 @@ def main():
         {'name': "Mean Absolute Percentage Error", 'short': "mape", 'function': additional_metrics.mean_absolute_percentage_error}
     ]
 
+    # Ifretrain period is defined read it from conf otherwise use None
+    if("retrain_period" in conf):
+        retrain_period = conf["retrain_period"]
+        if("samples_for_retrain" in conf):
+            samples_for_retrain = conf["samples_for_retrain"]
+        else:
+            samples_for_retrain = None
+    else:
+        retrain_period = None
+        samples_for_retrain = None
+
     for sensor in sensors:
         models[sensor] = {}
         for horizon in horizons:
-            models[sensor][horizon] = PredictiveModel(algorithm, sensor, horizon, evaluation_period, error_metrics, evaluation_split_point)
+            models[sensor][horizon] = PredictiveModel(algorithm, sensor,
+                                                      horizon,
+                                                      evaluation_period,
+                                                      error_metrics,
+                                                      evaluation_split_point,
+                                                      retrain_period,
+                                                      samples_for_retrain,
+                                                      os.path.join('.', 'test', 'retrain_data'))
             print("Initializing model_{}_{}h".format(sensor, horizon))
 
     # Model learning
@@ -219,7 +237,7 @@ def main():
 
                 # predictions
                 model = models[sensor][horizon]
-                predictions = model.predict([ftr_vector])
+                predictions = model.predict([ftr_vector], timestamp)
 
                 # output record
                 output = {'stampm': timestamp,

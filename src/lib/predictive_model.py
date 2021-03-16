@@ -7,6 +7,9 @@ import collections
 import math
 import warnings
 import time
+import os
+import json
+from datetime import datetime
 
 class PredictiveModel:
     """
@@ -14,7 +17,8 @@ class PredictiveModel:
     ref: http://scikit-learn.org/stable/supervised_learning.html#supervised-learning
     """
 
-    def __init__(self, algorithm, sensor, prediction_horizon, evaluation_periode, error_metrics, split_point):
+    def __init__(self, algorithm, sensor, prediction_horizon, evaluation_periode, error_metrics, split_point,
+                 retrain_period = None, samples_for_retrain = None, retrain_file_location = None):
         self.algorithm = algorithm
         self.model = eval(self.algorithm)
         self.sensor = sensor
@@ -26,18 +30,32 @@ class PredictiveModel:
         self.predictions = collections.deque(maxlen=(self.eval_periode + self.horizon))
         self.predictability = None
 
+        # Retrain configurations
+        self.samples_for_retrain = samples_for_retrain
+        self.retrain_period = retrain_period
+        self.samples_from_retrain = 0
+        self.samples_in_train_file = 0
+        self.retrain_memory = {"timestamp": [], "ftr_vector": []}
+
+
+        if(self.retrain_period is not None):
+            # Initialize file
+            filename = "{}_{}h_retrain.json".format(sensor, prediction_horizon)
+            self.train_file_path = os.path.join(retrain_file_location, filename)
+            open(self.train_file_path, "w").close()
+
     def fit(self, filename):
 
         with open(filename) as data_file:
             #data = pd.read_json(data_file)
             data = pd.read_json(data_file, lines=True) # if not valid json
-
             # set datetime as index
             data.set_index('timestamp',inplace=True)
             
             # transform ftr_vector from array to seperate fields
             data = data['ftr_vector'].apply(pd.Series)
-
+            
+            #print(data)
             # get features
             all_features = list(data)
 
@@ -97,8 +115,38 @@ class PredictiveModel:
                     output[error_name] = metrics['function'](true, pred)
             return output
 
-    def predict(self, ftr_vector):
-        return self.model.predict(ftr_vector)
+    def predict(self, ftr_vector, timestamp):
+        prediction = self.model.predict(ftr_vector)
+
+        # Retrain stuff
+        if(self.retrain_period is not None):
+            # Add current ftr_vector to file
+            with open(self.train_file_path, 'r') as data_r:
+                # get all lines
+                lines = data_r.readlines()
+                # Create new line and append it
+                new_line = "{\"timestamp\": " + str(timestamp) + ", \"ftr_vector\": " + str(ftr_vector[0]) + "}"
+                # If not the first line add \n at the beginning
+                if(len(lines)!=0):
+                    new_line = "\n" + new_line
+                lines.append(new_line)
+
+                # Truncate arrays to correct size
+                if(self.samples_for_retrain is not None and self.samples_for_retrain < len(lines)):
+                   lines = lines[-self.samples_for_retrain:]
+                
+
+            with open(self.train_file_path, 'w') as data_w:
+                data_w.writelines(lines)
+                
+            self.samples_from_retrain += 1
+            # If conditions are satisfied retrain the model
+            if(self.samples_from_retrain%self.retrain_period == 0 and
+               (self.samples_for_retrain is None or self.samples_for_retrain == len(lines))):
+                self.samples_from_retrain = 0
+                self.fit(filename=self.train_file_path)
+
+        return prediction
 
     def evaluate(self, output, measurement):
         prediction = output['value']

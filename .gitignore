@@ -1,4 +1,6 @@
 pythonenv*/
 __pycache__/
 test/data/
+test/retrain_data/
 src/tests/performance_rf.txt
+.vscode
