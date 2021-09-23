@@ -20,17 +20,17 @@ The code is available in the `src/` directory.
 | `-p` | `--predict` | Start live predictions (via Kafka) |
 
 #### Config file:
-Config file specifies the Kafka server address, which scikit algorithm to use, prediction horizons and sesnsors for which the model will be learned/loaded/saved/predicted. Config files are stored in `src/config/`.
+Config file specifies the Kafka server address, which scikit algorithm to use, prediction horizons and senssors for which the model will be learned/loaded/saved/predicted. Config files are stored in `src/config/`.
 
 Parameters:
 - **bootstrap_servers**: string (or list of `host[:port]` strings) that the consumer should contact to bootstrap initial cluster metadata
 - **algorithm**: string as scikit-learn model constructor with initialization parameters
-- **evaluation_periode**: define time periode (in hours) for which the model will be evaluated during live predictions (evaluations metrics added to ouput record)
-- **evaluation_split_point**: define training and testing spliting point in the dataset, for model evaluation during learning phase (fit takes twice as long time)
+- **evaluation_period**: define time period (in hours) for which the model will be evaluated during live predictions (evaluations metrics added to output record)
+- **evaluation_split_point**: define training and testing splitting point in the dataset, for model evaluation during learning phase (fit takes twice as long time)
 - **prediction_horizons**: list of prediction horizons (in hours) for which the model will be trained to predict for.
-- **sesnors**: list of sensors for which this specific instance will train the models and will be making predictions.
-- **retrain_period**: A number of recieved samples after which the model will be re-trained. This is an optional parameter. If it is not specified no re-training will be done.
-- **samples_for_retrain**: A number of samples that will be used for re-training. If retrain_period is not specified this parameter will be ignored. This is an optional parameter. If it is not specified (and retrain_period is) the re-train will be done on all samples recieved since the component was started.
+- **sensors**: list of sensors for which this specific instance will train the models and will be making predictions.
+- **retrain_period**: A number of received samples after which the model will be re-trained. This is an optional parameter. If it is not specified no re-training will be done.
+- **samples_for_retrain**: A number of samples that will be used for re-training. If retrain_period is not specified this parameter will be ignored. This is an optional parameter. If it is not specified (and retrain_period is) the re-train will be done on all samples received since the component was started.
 
 Example of config file:
 ```json
@@ -63,13 +63,13 @@ Example of cluster config file:
 ["N7", "N8"]
 ```
 
-Alternetively, process managers like `PM2` or `pman` would be a better fit for the task than `tmux`.
+Alternatively, process managers like `PM2` or `pman` would be a better fit for the task than `tmux`.
 
 ## Assumptions:
 - **Training data**: all the training files should be stored in a subfolder called `/data/fused`. Data should be stored as json objects per line (e.g. `{ "timestamp": 1459926000, "ftr_vector": [1, 2, 3]}`). Separate file for each sensor and prediction horizon. Files should be named the same as input kafka topics, that is `{sensor}_{horizon}h` (e.g. `sensor1_3h.json`)
-- **Re-training data**: all the re-training data (if re-training is specified) will be stored in a subfolder called `/data/retrain_data` in the same form as training data. Seperate files will be made for each sensor and prediction horizon. The names of the files will  be in the following form: `{sensor}_{horizon}h_retrain.json` (eg. `sensor1_3h_retrain.json`).
+- **Re-training data**: all the re-training data (if re-training is specified) will be stored in a subfolder called `/data/retrain_data` in the same form as training data. Separate files will be made for each sensor and prediction horizon. The names of the files will  be in the following form: `{sensor}_{horizon}h_retrain.json` (eg. `sensor1_3h_retrain.json`).
 - **Models**: all the models are stored in a subfolder called `/models`.  Each sensor and horizon has its own model. The name of the models is composed of sensor name and prediction horizon, `model_{sensor}_{horizon}h` (e.g. `model_sensor1_3h`)
-- **Input kafka topic**: The names of input kafka topics on which the prototype is listening for live data should be in the same format as trainng data file names, that is `features_{sensor}_{horizon}h`.
+- **Input kafka topic**: The names of input kafka topics on which the prototype is listening for live data should be in the same format as training data file names, that is `features_{sensor}_{horizon}h`.
 - **Output kafka topic**: Predictions are sent on different topics based on a sensor names, that is `{sensor}` (e.g. `sensor1`).
 
 ## Examples:

@@ -9,19 +9,20 @@ import sklearn
 import threading
 import requests
 
-# adding lib subdirectory
-sys.path.insert(0,'./lib')
-
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import Ridge
 import joblib
-import regression_metrics as additional_metrics
+from lib.regression_metrics import *
 
 from kafka import KafkaConsumer
 from kafka import KafkaProducer
 import numpy as np
 import pandas as pd
-from predictive_model import PredictiveModel
+from lib.predictive_model import PredictiveModel
+
+# adding lib subdirectory
+sys.path.insert(0, './lib')
+
 
 def get_model_file_name(sensor, horizon):
     subdir = 'models'
@@ -33,6 +34,7 @@ def get_model_file_name(sensor, horizon):
 
     return filepath
 
+
 def get_data_file_name(sensor, horizon):
     subdir = '../../data/fused'
     if not os.path.isdir(subdir):
@@ -43,6 +45,7 @@ def get_data_file_name(sensor, horizon):
 
     return filepath
 
+
 def get_input_data_topics(sensors, horizons):
     topics = []
     for sensor in sensors:
@@ -51,11 +54,12 @@ def get_input_data_topics(sensors, horizons):
 
     return topics
 
+
 def ping_watchdog():
-    interval = 60 # ping interval in seconds
+    interval = 60  # ping interval in seconds
     url = "localhost"
-    port= 3001
-    path= "/ping?id=5&secret=b9347c25aba4d3ba6e8f61d05fd1c011"
+    port = 3001
+    path = "/ping?id=5&secret=b9347c25aba4d3ba6e8f61d05fd1c011"
 
     try:
         r = requests.get("http://{}:{}{}".format(url, port, path))
@@ -65,6 +69,7 @@ def ping_watchdog():
         print('Successful ping at ' + time.ctime())
 
     threading.Timer(interval, ping_watchdog).start()
+
 
 def main():
     parser = argparse.ArgumentParser(description="Modeling component")
@@ -81,7 +86,16 @@ def main():
         "-f",
         "--fit",
         action='store_true',
+        dest="fit",
         help=u"Learning the model from dataset in subfolder '../../data/fused'",
+    )
+
+    parser.add_argument(
+        "-a",
+        "--alternate_it",
+        action='store_true',
+        dest="alternate_fit",
+        help=u"Learning the model from csv file in subfolder '../../data/fused'",
     )
 
     parser.add_argument(
@@ -115,14 +129,14 @@ def main():
     )
 
     # Display help if no arguments are defined
-    if len(sys.argv)==1:
+    if len(sys.argv) == 1:
         parser.print_help()
         sys.exit(1)
 
     # Parse input arguments
     args = parser.parse_args()
 
-    #Read config file
+    # Read config file
     with open("config/" + args.config) as data_file:
         conf = json.load(data_file)
 
@@ -130,60 +144,44 @@ def main():
     print("\n=== Init phase ===")
 
     models = {}
-    algorithm = conf['algorithm']
-    sensors = conf['sensors']
-    horizons = conf['prediction_horizons']
-    evaluation_period = conf['evaluation_period']
-    evaluation_split_point = conf['evaluation_split_point']
-    error_metrics = [
-        {'name': "R2 Score", 'short': "r2", 'function': sklearn.metrics.r2_score},
-        {'name': "Mean Absolute Error", 'short': "mae", 'function': sklearn.metrics.mean_absolute_error},
-        {'name': "Mean Squared Error", 'short': "mse", 'function': sklearn.metrics.mean_squared_error},
-        {'name': "Root Mean Squared Error", 'short': "rmse", 'function': None},
-        {'name': "Mean Absolute Percentage Error", 'short': "mape", 'function': additional_metrics.mean_absolute_percentage_error}
-    ]
+    kwargs = dict()
+    sensors, horizons = None, None
 
-    # Ifretrain period is defined read it from conf otherwise use None
-    if("retrain_period" in conf):
-        retrain_period = conf["retrain_period"]
-        if("samples_for_retrain" in conf):
-            samples_for_retrain = conf["samples_for_retrain"]
+    for key in conf:
+        if 'sensors' == key:
+            sensors = conf[key]
+        elif 'prediction_horizons' == key:
+            horizons = conf[key]
         else:
-            samples_for_retrain = None
-    else:
-        retrain_period = None
-        samples_for_retrain = None
+            kwargs[key] = conf[key]
 
     for sensor in sensors:
         models[sensor] = {}
         for horizon in horizons:
-            models[sensor][horizon] = PredictiveModel(algorithm, sensor,
+            models[sensor][horizon] = PredictiveModel(sensor,
                                                       horizon,
-                                                      evaluation_period,
-                                                      error_metrics,
-                                                      evaluation_split_point,
-                                                      retrain_period,
-                                                      samples_for_retrain,
-                                                      os.path.join('.', 'test', 'retrain_data'))
+                                                      **kwargs)
             print("Initializing model_{}_{}h".format(sensor, horizon))
 
     # Model learning
-    if (args.fit):
+    if args.fit:
         print("\n=== Learning phase ===")
 
         for sensor in sensors:
             for horizon in horizons:
                 start = time.time()
                 data = get_data_file_name(sensor, horizon)
-                try:
-                    score = models[sensor][horizon].fit(data)
-                except Exception as e:
-                    print(e)
+                # try:
+                score = models[sensor][horizon].fit(data)
                 end = time.time()
-                print("Model[{0}_{1}h] training time: {2:.1f}s, evaluations: {3})".format(sensor, horizon, end-start, str(score)))
+                print("Model[{0}_{1}h] training time: {2:.1f}s, evaluations: {3})".format(sensor, horizon,
+                                                                                          end - start,
+                                                                                          str(score)))
+                # except Exception as e:
+                #     print(e)
 
     # Model saving
-    if (args.save):
+    if args.save:
         print("\n=== Saving phase ===")
 
         for sensor in sensors:
@@ -194,7 +192,7 @@ def main():
                 print("Saved model", filename)
 
     # Model loading
-    if (args.load):
+    if args.load:
         print("\n=== Loading phase ===")
 
         for sensor in sensors:
@@ -204,12 +202,12 @@ def main():
                 model.load(filename)
                 print("Loaded model", filename)
 
-    if (args.watchdog):
+    if args.watchdog:
         print("\n=== Watchdog started ===")
         ping_watchdog()
 
     # Live predictions
-    if (args.predict):
+    if args.predict:
         print("\n=== Predictions phase ===")
 
         # Start Kafka consumer
@@ -227,7 +225,7 @@ def main():
                 rec = eval(msg.value)
                 timestamp = rec['timestamp']
                 ftr_vector = rec['ftr_vector']
-                measurement = ftr_vector[0] # first feature is the target measurement
+                measurement = ftr_vector[0]  # first feature is the target measurement
 
                 topic = msg.topic
 
@@ -247,7 +245,7 @@ def main():
                           'predictability': model.predictability}
 
                 # evaluation
-                output = model.evaluate(output, measurement) # appends evaluations to output
+                output = model.evaluate(output, measurement)  # appends evaluations to output
 
                 # send result to kafka topic
                 output_topic = "predictions_{}".format(sensor)
@@ -262,6 +260,7 @@ def main():
 
             except Exception as e:
                 print('Consumer error: ' + str(e))
+
 
 if __name__ == '__main__':
     main()
