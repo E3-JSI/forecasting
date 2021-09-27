@@ -20,7 +20,7 @@ def mean_absolute_percentage_error(y_true, y_pred):
 
     # Check if y_pred has any zero elements. If yes, remove them, and raise warning
     zero_indices = np.flatnonzero(y_true == 0)
-    if (zero_indices.size != 0):
+    if zero_indices.size != 0:
         y_true = np.delete(y_true, zero_indices)
         y_pred = np.delete(y_pred, zero_indices)
 
@@ -28,9 +28,6 @@ def mean_absolute_percentage_error(y_true, y_pred):
         # warnings.warn(warning_msg, RuntimeWarning)
 
     return np.mean(np.abs((y_true - y_pred) / y_true)) * 100
-
-
-import numpy as np
 
 
 # MASE - Mean Absolute Scaled Error

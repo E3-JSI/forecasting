@@ -5,52 +5,46 @@ import sys
 import json
 import time
 import os.path
-import sklearn
 import threading
 import requests
-
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import Ridge
-import joblib
-from lib.regression_metrics import *
+import sklearn.metrics
 
 from kafka import KafkaConsumer
 from kafka import KafkaProducer
-import numpy as np
-import pandas as pd
-from lib.predictive_model import PredictiveModel
 
-# adding lib subdirectory
 sys.path.insert(0, './lib')
+from predictive_model import PredictiveModel
 
 
-def get_model_file_name(sensor, horizon):
+def get_model_file_name(sensor, horizon, time_period='h'):
     subdir = 'models'
     if not os.path.isdir(subdir):
         os.makedirs(subdir)
 
-    filename = "model_{}_{}h".format(sensor, horizon)
+    filename = "model_{}_{}{}".format(sensor, horizon, time_period)
     filepath = os.path.join(subdir, filename)
 
     return filepath
 
 
-def get_data_file_name(sensor, horizon):
+def get_data_file_name(sensor, horizon, time_period='h'):
     subdir = '../../data/fused'
     if not os.path.isdir(subdir):
         os.makedirs(subdir)
 
-    filename = "{}_{}h.json".format(sensor, horizon)
+    filename = "{}_{}{}.json".format(sensor, horizon, time_period)
     filepath = os.path.join(subdir, filename)
 
     return filepath
 
 
-def get_input_data_topics(sensors, horizons):
+def get_input_data_topics(sensors, horizons, time_period):
     topics = []
     for sensor in sensors:
         for horizon in horizons:
-            topics.append("features_{}_{}h".format(sensor, horizon))
+            topics.append("features_{}_{}{}".format(sensor, horizon, time_period))
 
     return topics
 
@@ -88,14 +82,6 @@ def main():
         action='store_true',
         dest="fit",
         help=u"Learning the model from dataset in subfolder '../../data/fused'",
-    )
-
-    parser.add_argument(
-        "-a",
-        "--alternate_it",
-        action='store_true',
-        dest="alternate_fit",
-        help=u"Learning the model from csv file in subfolder '../../data/fused'",
     )
 
     parser.add_argument(
@@ -143,9 +129,13 @@ def main():
     # Initialize models
     print("\n=== Init phase ===")
 
-    models = {}
+    models = dict()
     kwargs = dict()
     sensors, horizons = None, None
+    time_offset = 'h'
+
+    if 'time_offset' in conf:
+        time_offset = conf['time_offset'].lower()
 
     for key in conf:
         if 'sensors' == key:
@@ -154,6 +144,8 @@ def main():
             horizons = conf[key]
         else:
             kwargs[key] = conf[key]
+            if 'time_offset' == key:
+                time_offset = conf['time_offset'].lower()
 
     for sensor in sensors:
         models[sensor] = {}
@@ -161,7 +153,7 @@ def main():
             models[sensor][horizon] = PredictiveModel(sensor,
                                                       horizon,
                                                       **kwargs)
-            print("Initializing model_{}_{}h".format(sensor, horizon))
+            print("Initializing model_{}_{}{}".format(sensor, horizon, time_offset))
 
     # Model learning
     if args.fit:
@@ -171,14 +163,16 @@ def main():
             for horizon in horizons:
                 start = time.time()
                 data = get_data_file_name(sensor, horizon)
-                # try:
-                score = models[sensor][horizon].fit(data)
-                end = time.time()
-                print("Model[{0}_{1}h] training time: {2:.1f}s, evaluations: {3})".format(sensor, horizon,
-                                                                                          end - start,
-                                                                                          str(score)))
-                # except Exception as e:
-                #     print(e)
+                try:
+                    score = models[sensor][horizon].fit(data)
+                    end = time.time()
+                    print("Model[{0}_{1}{2}] training time: {3:.1f}s, evaluations: {4})".format(sensor,
+                                                                                                horizon,
+                                                                                                time_offset,
+                                                                                                end - start,
+                                                                                                str(score)))
+                except Exception as e:
+                    print(e)
 
     # Model saving
     if args.save:
@@ -211,7 +205,7 @@ def main():
         print("\n=== Predictions phase ===")
 
         # Start Kafka consumer
-        topics = get_input_data_topics(sensors, horizons)
+        topics = get_input_data_topics(sensors, horizons, time_offset)
         consumer = KafkaConsumer(bootstrap_servers=conf['bootstrap_servers'])
         consumer.subscribe(topics)
         print("Subscribed to topics: ", topics)
@@ -221,45 +215,45 @@ def main():
                                  value_serializer=lambda v: json.dumps(v).encode('utf-8'))
 
         for msg in consumer:
+            # try:
+            rec = eval(msg.value)
+            timestamp = rec['timestamp']
+            ftr_vector = rec['ftr_vector']
+            measurement = ftr_vector[0]  # first feature is the target measurement
+
+            topic = msg.topic
+
+            # extract sensor and horizon info from topic name
+            horizon = int(topic.split("_")[-1][:-len(time_offset)])
+            sensor = topic.split("_")[-2]
+
+            # predictions
+            model = models[sensor][horizon]
+            predictions = model.predict([ftr_vector], timestamp)
+
+            # output record
+            output = {'stampm': timestamp,
+                      'value': predictions[0],
+                      'sensor_id': sensor,
+                      'horizon': horizon,
+                      'predictability': model.predictability}
+
+            # evaluation
+            output = model.evaluate(output, measurement)  # appends evaluations to output
+
+            # send result to kafka topic
+            output_topic = "predictions_{}".format(sensor)
+            future = producer.send(output_topic, output)
+
+            print(output_topic + ": " + str(output))
+
             try:
-                rec = eval(msg.value)
-                timestamp = rec['timestamp']
-                ftr_vector = rec['ftr_vector']
-                measurement = ftr_vector[0]  # first feature is the target measurement
-
-                topic = msg.topic
-
-                # extract sensor and horizon info from topic name
-                horizon = int(topic.split("_")[-1][:-1])
-                sensor = topic.split("_")[-2]
-
-                # predictions
-                model = models[sensor][horizon]
-                predictions = model.predict([ftr_vector], timestamp)
-
-                # output record
-                output = {'stampm': timestamp,
-                          'value': predictions[0],
-                          'sensor_id': sensor,
-                          'horizon': horizon,
-                          'predictability': model.predictability}
-
-                # evaluation
-                output = model.evaluate(output, measurement)  # appends evaluations to output
-
-                # send result to kafka topic
-                output_topic = "predictions_{}".format(sensor)
-                future = producer.send(output_topic, output)
-
-                print(output_topic + ": " + str(output))
-
-                try:
-                    record_metadata = future.get(timeout=10)
-                except Exception as e:
-                    print('Producer error: ' + str(e))
-
+                future.get(timeout=10)
             except Exception as e:
-                print('Consumer error: ' + str(e))
+                print('Producer error: ' + str(e))
+
+            # except Exception as e:
+            #     print('Consumer error: ' + str(e))
 
 
 if __name__ == '__main__':

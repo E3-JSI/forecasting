@@ -1,6 +1,4 @@
 import sklearn
-import lightgbm
-# from sklearn.externals import joblib
 import joblib
 import pandas as pd
 import collections
@@ -8,44 +6,51 @@ import math
 import warnings
 import time
 import os
-import json
-from datetime import datetime
 import torch
 import numpy as np
-from lib.regression_metrics import *
+import sys
+import lightgbm
+
+sys.path.insert(0, './lib')
+from regression_metrics import mean_absolute_percentage_error
 
 
 class PredictiveModel:
     """
-    Predictive model class is a wrapper for scikit learn regression models
+    Predictive model class is a wrapper for scikit learn regression models and PyTorch.
     ref: http://scikit-learn.org/stable/supervised_learning.html#supervised-learning
+    ref: https://pytorch.org/
     """
+
+    def rmse(self, true, pred):
+        return math.sqrt(sklearn.metrics.mean_squared_error(true, pred))
 
     def __init__(self,
                  sensor,
                  prediction_horizon,
                  evaluation_period=512,
-                 error_metrics=None,
+                 err_metrics=None,
                  split_point=0.8,
                  algorithm='torch',
-                 encoder_length=None,
                  retrain_period=None,
                  samples_for_retrain=None,
                  retrain_file_location=None,
                  time_offset='H',
-                 learning_rate=0.001,
+                 learning_rate=4 * 10 ** -5,
                  batch_size=64,
                  training_rounds=100,
                  num_workers=1,
                  **kwargs):
 
-        if not error_metrics:
+        self.err_metrics = err_metrics
+        if not err_metrics:
+
             self.err_metrics = [
                 {'name': "R2 Score", 'short': "r2", 'function': sklearn.metrics.r2_score},
                 {'name': "Mean Absolute Error", 'short': "mae", 'function': sklearn.metrics.mean_absolute_error},
                 {'name': "Mean Squared Error", 'short': "mse", 'function': sklearn.metrics.mean_squared_error},
                 {'name': "Root Mean Squared Error", 'short': "rmse",
-                 'function': lambda true, pred: math.sqrt(sklearn.metrics.mean_squared_error(true, pred))},
+                 'function': self.rmse},
                 {'name': "Mean Absolute Percentage Error", 'short': "mape",
                  'function': mean_absolute_percentage_error}
             ]
@@ -59,16 +64,13 @@ class PredictiveModel:
         self.horizon = prediction_horizon
         self.eval_period = evaluation_period
         self.split_point = split_point
-        self.encoder_length = encoder_length
         self.measurements = collections.deque(maxlen=self.eval_period)
         self.predictions = collections.deque(maxlen=(self.eval_period + self.horizon))
         self.predictability = None
         self.time_offset = time_offset
 
-        # Alternate fit arguments for Torch networks
+        # Torch model arguments
         self.encoder_length = 1
-        if encoder_length is not None:
-            self.encoder_length = encoder_length
         self.learning_rate = learning_rate
         self.batch_size = batch_size
         self.training_rounds = training_rounds
@@ -83,7 +85,7 @@ class PredictiveModel:
 
         if self.retrain_period is not None:
             # Initialize file
-            filename = "{}_{}h_retrain.json".format(sensor, prediction_horizon)
+            filename = "{}_{}{}_retrain.json".format(sensor, prediction_horizon, time_offset)
             self.train_file_path = os.path.join(retrain_file_location, filename)
             open(self.train_file_path, "w").close()
 
@@ -93,11 +95,9 @@ class PredictiveModel:
             data = pd.read_json(data_file, lines=True)  # if not valid json
             # set datetime as index
             data.set_index('timestamp', inplace=True)
-            # data.index = [datetime.fromtimestamp(i) for i in data.index]
             # transform ftr_vector from array to separate fields
             data = data['ftr_vector'].apply(pd.Series)
 
-            # print(data)
             # get features
             all_features = list(data)
 
@@ -133,10 +133,9 @@ class PredictiveModel:
 
                 for rec in x_test:
                     start1 = time.time()
-                    pred = evaluation_model.predict(rec.reshape(1, -1))
+                    evaluation_model.predict(rec.reshape(1, -1))
                     end = time.time()
                     latency = end - start1
-                    # print(latency)
                     data_file.write("{}\n".format(latency))
 
             # testing predictions
@@ -153,50 +152,11 @@ class PredictiveModel:
                 output[metrics['short']] = metrics['function'](true, pred)
             return output
 
-    class TorchNetwork:
-
-        def __init__(self, parent):
-            self.parent = parent
-            self.ann = None
-
-        def fit(self, x, y):
-            loss_function = torch.nn.MSELoss()  # error/cost function f(ANN(x),y), i.e. degree of misprediction
-            dimensions = [np.shape(x)[1], (np.shape(x)[1] + 1) // 2, 1]
-            layers = (2 * len(dimensions) - 3) * [torch.nn.ReLU()]  # layers of the ann
-            layers[::2] = [torch.nn.Linear(dimensions[k], dimensions[k + 1]) for k in range(len(dimensions) - 1)]
-            self.ann = torch.nn.Sequential(*layers)
-
-            opt = torch.optim.Adam(self.ann.parameters(),
-                                   lr=self.parent.learning_rate)  # F will adjust the ANN's weights to minimize f(ANN(x),y)
-
-            train_batches = torch.utils.data.DataLoader(
-                # partition 3k-tuples randomly into batches of 64 for nt-thread parallelization
-                [[x[i], y[i]] for i in range(len(x))], batch_size=self.parent.batch_size, shuffle=True,
-                num_workers=self.parent.num_workers)
-            losses = []
-            for training_round in range(
-                    self.parent.training_rounds):  # if the number of rounds is too small/large, we get underfitting/overfitting
-                i, loss = 0, 0
-                print('Train epoch \t' + str(training_round), end=' ')
-                for x, y in train_batches:  # randomly select a batch of 64 pairs x,y, each of length 3k,3l
-                    opt.zero_grad()  # Training pass; set the gradients to 0 before each loss calculation.
-                    loss = loss_function(self.ann(x.float()),
-                                         y.unsqueeze(1).float())  # calculate the error/cost/loss, this is a 0-dim tensor (number)
-                    loss.backward()  # backpropagation: compute gradients (this is where the ANN learns)
-                    if i % 1000 == 0:
-                        print(round(loss.item(), 3), end='\t')
-                    opt.step()  # apply gradients to improve weights ann[k].weight.grad to minimize f
-                    i, loss = i + 1, loss + loss.item()  # item() converts a 0-dim tensor to a number
-                losses.append(loss)
-                print('loss:', losses[-1])
-
-        def predict(self, x):
-            return self.ann(torch.tensor(x).float()).detach().numpy()
-
     def predict(self, ftr_vector, timestamp):
         prediction = self.model.predict(ftr_vector)
 
-        # Retrain stuff
+        # TODO retraining should be done in asynchronous fashion to prevent long training time to freeze up the whole
+        #  process of predictions.
         if self.retrain_period is not None:
             # Add current ftr_vector to file
             with open(self.train_file_path, 'r') as data_r:
@@ -256,3 +216,47 @@ class PredictiveModel:
     def load(self, filename):
         self.model = joblib.load(filename)
         # print "Loaded model from", filename
+
+    class TorchNetwork:
+        """
+        Wrapper for PyTorch. The class is designed to behave as a sklearn model with fit and predict methods.
+        """
+
+        def __init__(self, parent):
+            self.parent = parent
+            self.ann = None
+
+        def fit(self, x, y):
+            loss_function = torch.nn.MSELoss()
+            dimensions = [np.shape(x)[1], (np.shape(x)[1] + 1) // 2, 1]
+            layers = (2 * len(dimensions) - 3) * [torch.nn.ReLU()]
+            layers[::2] = [torch.nn.Linear(dimensions[k], dimensions[k + 1]) for k in range(len(dimensions) - 1)]
+            self.ann = torch.nn.Sequential(*layers)
+
+            opt = torch.optim.Adam(self.ann.parameters(), lr=self.parent.learning_rate)
+
+            # partition 3k-tuples randomly into batches of 64 for nt-thread parallelization
+            train_batches = torch.utils.data.DataLoader(
+                [[x[i], y[i]] for i in range(len(x))], batch_size=self.parent.batch_size, shuffle=True,
+                num_workers=self.parent.num_workers)
+
+            losses = []
+            for training_round in range(self.parent.training_rounds):
+                i, loss = 0, 0
+
+                # randomly select a batch of 64 pairs x,y, each of length 3k,3l
+                for x, y in train_batches:
+                    # Training pass; set the gradients to 0 before each loss calculation.
+                    opt.zero_grad()
+                    loss = loss_function(self.ann(x.float()), y.unsqueeze(1).float())
+
+                    # backpropagation: compute gradients
+                    loss.backward()
+
+                    # apply gradients to improve weights ann[k].weight.grad to minimize f
+                    opt.step()
+                    i, loss = i + 1, loss + loss.item()
+                losses.append(loss)
+
+        def predict(self, x):
+            return self.ann(torch.tensor(x).float()).detach().tolist()

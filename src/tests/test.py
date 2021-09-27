@@ -4,12 +4,14 @@ import sys
 import time
 import unittest
 import sklearn.metrics
-from lib.predictive_model import PredictiveModel
+from sklearn.ensemble import RandomForestRegressor
 import os
-
 import warnings
+import math
+import numpy as np
 
 sys.path.insert(0, '../lib')
+from predictive_model import PredictiveModel
 
 
 def create_testing_file():
@@ -62,31 +64,21 @@ def create_testing_file_for_retrain():
     return filepath
 
 
-def create_model_instance(model_string, retrain_period=None, samples_for_retrain=None):
-    algorithm = model_string
-    sensor = "N1"
-    horizon = 1
-    evaluation_period = 72
-    evaluation_split_point = 0.8
-    error_metrics = [
-        {'name': "R2 Score", 'short': "r2", 'function': sklearn.metrics.r2_score},
-        {'name': "Mean Absolute Error", 'short': "mae", 'function': sklearn.metrics.mean_absolute_error},
-        {'name': "Mean Squared Error", 'short': "mse", 'function': sklearn.metrics.mean_squared_error},
-        {'name': "Root Mean Squared Error", 'short': "rmse", 'function': None}
-    ]
-    model = PredictiveModel(algorithm, sensor, horizon, evaluation_period,
-                            error_metrics, evaluation_split_point, retrain_period,
-                            samples_for_retrain, os.path.join('.', 'test', 'retrain_data'))
-
+def create_model_instance(model_string, **kwargs):
+    model = PredictiveModel(algorithm=model_string,
+                            sensor="N1",
+                            prediction_horizon=1,
+                            evaluation_period=72,
+                            retrain_file_location=os.path.join('.', 'test', 'retrain_data'),
+                            **kwargs)
     return model
 
 
 class SimpleWidgetTestCase(unittest.TestCase):
 
     def setUp(self):
-        self.model = create_model_instance(
-            "sklearn.ensemble.RandomForestRegressor(n_estimators=100, n_jobs=16, random_state=0)",
-            retrain_period=None, samples_for_retrain=None)
+        self.model = create_model_instance(model_string="sklearn.ensemble.RandomForestRegressor(n_estimators=100, n" +
+                                                        "_jobs=16, random_state=0)")
 
 
 class TestClassProperties(SimpleWidgetTestCase):
@@ -167,7 +159,7 @@ class TestModelFunctionality(SimpleWidgetTestCase):
 
         model_for_retrain = create_model_instance(
             "sklearn.ensemble.RandomForestRegressor(n_estimators=100, n_jobs=16, random_state=0)",
-            retrain_period=10, samples_for_retrain=None)
+            retrain_period=10)
 
         # Fit the model
         model_for_retrain.fit(f)
@@ -180,7 +172,7 @@ class TestModelFunctionality(SimpleWidgetTestCase):
 
             timestamp = start_timestamp + i * 60 * 60
             p = model_for_retrain.predict([[1]], timestamp=timestamp)
-            if (i < 10):
+            if i < 10:
                 self.assertEqual(p[0], 0.)
             else:
                 self.assertEqual(p[0], 1.)
@@ -330,7 +322,7 @@ class TestModelEvaluation(SimpleWidgetTestCase):
 
         # check buffers
         self.assertEqual(len(self.model.measurements), self.model.eval_period)
-        self.assertEqual(len(self.model.predictions), self.model.eval_periode + self.model.horizon)
+        self.assertEqual(len(self.model.predictions), self.model.eval_period + self.model.horizon)
 
     def test_predictability_index(self):
 
@@ -364,6 +356,31 @@ class TestClassLGBMProperties(LGBMTestCase):
 
     def test_split_point(self):
         self.assertEqual(self.model.split_point, 0.8)
+
+
+class PyTorchTestCase(unittest.TestCase):
+
+    def setUp(self):
+        self.model = create_model_instance(
+            "torch",
+            learning_rate=0.001,
+            batch_size=10,
+            training_rounds=2
+        )
+
+
+class TestPyTorchEvaluation(PyTorchTestCase):
+
+    def test_fit(self):
+        f = create_testing_file()
+        score = self.model.fit(f)
+        self.assertIsInstance(score, dict)
+
+    def test_predict(self):
+        f = create_testing_file()
+        self.model.fit(f)
+        prediction = self.model.predict([[1, 1, 1]], timestamp=time.time())
+        self.assertEqual(np.shape(prediction), (1, 1))
 
 
 if __name__ == '__main__':
