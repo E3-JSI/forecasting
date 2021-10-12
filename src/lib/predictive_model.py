@@ -6,13 +6,14 @@ import math
 import warnings
 import time
 import os
-import torch
-import numpy as np
 import sys
 import lightgbm
+from sklearn.experimental import enable_iterative_imputer
+from sklearn.impute import IterativeImputer, SimpleImputer
 
 sys.path.insert(0, './lib')
-from regression_metrics import mean_absolute_percentage_error
+from regression_metrics import mean_absolute_percentage_error, rmse
+from torch_network import TorchNetwork
 
 
 class PredictiveModel:
@@ -21,9 +22,6 @@ class PredictiveModel:
     ref: http://scikit-learn.org/stable/supervised_learning.html#supervised-learning
     ref: https://pytorch.org/
     """
-
-    def rmse(self, true, pred):
-        return math.sqrt(sklearn.metrics.mean_squared_error(true, pred))
 
     def __init__(self,
                  sensor,
@@ -40,23 +38,30 @@ class PredictiveModel:
                  batch_size=64,
                  training_rounds=100,
                  num_workers=1,
+                 gmm_layer="False",
+                 initial_imputer="simple",
+                 max_iter=15,
+                 n_gmm=5,
+                 min_n_gmm=1,
+                 max_n_gmm=10,
+                 gmm_seed=None,
+                 verbose=False,
                  **kwargs):
 
         self.err_metrics = err_metrics
         if not err_metrics:
-
             self.err_metrics = [
                 {'name': "R2 Score", 'short': "r2", 'function': sklearn.metrics.r2_score},
                 {'name': "Mean Absolute Error", 'short': "mae", 'function': sklearn.metrics.mean_absolute_error},
                 {'name': "Mean Squared Error", 'short': "mse", 'function': sklearn.metrics.mean_squared_error},
                 {'name': "Root Mean Squared Error", 'short': "rmse",
-                 'function': self.rmse},
+                 'function': rmse},
                 {'name': "Mean Absolute Percentage Error", 'short': "mape",
                  'function': mean_absolute_percentage_error}
             ]
 
         self.algorithm = algorithm
-        if "torch" == algorithm:
+        if algorithm == "torch":
             self.model = self.TorchNetwork(self)
         else:
             self.model = eval(self.algorithm)
@@ -75,6 +80,22 @@ class PredictiveModel:
         self.batch_size = batch_size
         self.training_rounds = training_rounds
         self.num_workers = num_workers
+
+        # GMM layer arguments
+        self.gmm_layer = True
+        if gmm_layer.lower() == "false":
+            self.gmm_layer = False
+
+        if initial_imputer.lower() == 'iterative':
+            self.initial_imputer = IterativeImputer(max_iter=max_iter)
+        else:
+            self.initial_imputer = SimpleImputer()
+
+        self.n_gmm = n_gmm
+        self.min_n_gmm = min_n_gmm
+        self.max_n_gmm = max_n_gmm
+        self.gmm_seed = gmm_seed
+        self.verbose = verbose
 
         # Retrain configurations
         self.samples_for_retrain = samples_for_retrain
@@ -211,52 +232,6 @@ class PredictiveModel:
 
     def save(self, filename):
         joblib.dump(self.model, filename, compress=3)
-        # print "Saved model to", filename
 
     def load(self, filename):
         self.model = joblib.load(filename)
-        # print "Loaded model from", filename
-
-    class TorchNetwork:
-        """
-        Wrapper for PyTorch. The class is designed to behave as a sklearn model with fit and predict methods.
-        """
-
-        def __init__(self, parent):
-            self.parent = parent
-            self.ann = None
-
-        def fit(self, x, y):
-            loss_function = torch.nn.MSELoss()
-            dimensions = [np.shape(x)[1], (np.shape(x)[1] + 1) // 2, 1]
-            layers = (2 * len(dimensions) - 3) * [torch.nn.ReLU()]
-            layers[::2] = [torch.nn.Linear(dimensions[k], dimensions[k + 1]) for k in range(len(dimensions) - 1)]
-            self.ann = torch.nn.Sequential(*layers)
-
-            opt = torch.optim.Adam(self.ann.parameters(), lr=self.parent.learning_rate)
-
-            # partition 3k-tuples randomly into batches of 64 for nt-thread parallelization
-            train_batches = torch.utils.data.DataLoader(
-                [[x[i], y[i]] for i in range(len(x))], batch_size=self.parent.batch_size, shuffle=True,
-                num_workers=self.parent.num_workers)
-
-            losses = []
-            for training_round in range(self.parent.training_rounds):
-                i, loss = 0, 0
-
-                # randomly select a batch of 64 pairs x,y, each of length 3k,3l
-                for x, y in train_batches:
-                    # Training pass; set the gradients to 0 before each loss calculation.
-                    opt.zero_grad()
-                    loss = loss_function(self.ann(x.float()), y.unsqueeze(1).float())
-
-                    # backpropagation: compute gradients
-                    loss.backward()
-
-                    # apply gradients to improve weights ann[k].weight.grad to minimize f
-                    opt.step()
-                    i, loss = i + 1, loss + loss.item()
-                losses.append(loss)
-
-        def predict(self, x):
-            return self.ann(torch.tensor(x).float()).detach().tolist()

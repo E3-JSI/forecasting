@@ -10,6 +10,7 @@ import requests
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import Ridge
 import sklearn.metrics
+import traceback
 
 from kafka import KafkaConsumer
 from kafka import KafkaProducer
@@ -49,20 +50,15 @@ def get_input_data_topics(sensors, horizons, time_period):
     return topics
 
 
-def ping_watchdog():
-    interval = 60  # ping interval in seconds
-    url = "localhost"
-    port = 3001
-    path = "/ping?id=5&secret=b9347c25aba4d3ba6e8f61d05fd1c011"
-
+def ping_watchdog(path, watchdog_interval=60, watchdog_url='localhost', watchdog_port=3001, **kwargs):
     try:
-        r = requests.get("http://{}:{}{}".format(url, port, path))
-    except requests.exceptions.RequestException as e:  # This is the correct syntax
-        print(e)
+        requests.get("http://{}:{}{}".format(watchdog_url, watchdog_port, path))
+    except requests.exceptions.RequestException:
+        traceback.print_exc()
     else:
         print('Successful ping at ' + time.ctime())
 
-    threading.Timer(interval, ping_watchdog).start()
+    threading.Timer(watchdog_interval, ping_watchdog).start()
 
 
 def main():
@@ -171,8 +167,8 @@ def main():
                                                                                                 time_offset,
                                                                                                 end - start,
                                                                                                 str(score)))
-                except Exception as e:
-                    print(e)
+                except Exception:
+                    traceback.print_exc()
 
     # Model saving
     if args.save:
@@ -197,8 +193,11 @@ def main():
                 print("Loaded model", filename)
 
     if args.watchdog:
-        print("\n=== Watchdog started ===")
-        ping_watchdog()
+        if "watchdog_path" in conf.keys:
+            print("\n=== Watchdog started ===")
+            ping_watchdog(conf.watchdog_path, **conf)
+        else:
+            print("Watchdog path missing")
 
     # Live predictions
     if args.predict:
@@ -215,45 +214,45 @@ def main():
                                  value_serializer=lambda v: json.dumps(v).encode('utf-8'))
 
         for msg in consumer:
-            # try:
-            rec = eval(msg.value)
-            timestamp = rec['timestamp']
-            ftr_vector = rec['ftr_vector']
-            measurement = ftr_vector[0]  # first feature is the target measurement
-
-            topic = msg.topic
-
-            # extract sensor and horizon info from topic name
-            horizon = int(topic.split("_")[-1][:-len(time_offset)])
-            sensor = topic.split("_")[-2]
-
-            # predictions
-            model = models[sensor][horizon]
-            predictions = model.predict([ftr_vector], timestamp)
-
-            # output record
-            output = {'stampm': timestamp,
-                      'value': predictions[0],
-                      'sensor_id': sensor,
-                      'horizon': horizon,
-                      'predictability': model.predictability}
-
-            # evaluation
-            output = model.evaluate(output, measurement)  # appends evaluations to output
-
-            # send result to kafka topic
-            output_topic = "predictions_{}".format(sensor)
-            future = producer.send(output_topic, output)
-
-            print(output_topic + ": " + str(output))
-
             try:
-                future.get(timeout=10)
-            except Exception as e:
-                print('Producer error: ' + str(e))
+                rec = eval(msg.value)
+                timestamp = rec['timestamp']
+                ftr_vector = rec['ftr_vector']
+                measurement = ftr_vector[0]  # first feature is the target measurement
 
-            # except Exception as e:
-            #     print('Consumer error: ' + str(e))
+                topic = msg.topic
+
+                # extract sensor and horizon info from topic name
+                horizon = int(topic.split("_")[-1][:-len(time_offset)])
+                sensor = topic.split("_")[-2]
+
+                # predictions
+                model = models[sensor][horizon]
+                predictions = model.predict([ftr_vector], timestamp)
+
+                # output record
+                output = {'stampm': timestamp,
+                          'value': predictions[0],
+                          'sensor_id': sensor,
+                          'horizon': horizon,
+                          'predictability': model.predictability}
+
+                # evaluation
+                output = model.evaluate(output, measurement)  # appends evaluations to output
+
+                # send result to kafka topic
+                output_topic = "predictions_{}".format(sensor)
+                future = producer.send(output_topic, output)
+
+                print(output_topic + ": " + str(output))
+
+                try:
+                    future.get(timeout=10)
+                except Exception as e:
+                    print('Producer error: ' + str(e))
+
+            except Exception as e:
+                print('Consumer error: ' + str(e))
 
 
 if __name__ == '__main__':

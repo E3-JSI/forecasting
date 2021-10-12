@@ -1,4 +1,6 @@
 import numpy as np
+import math
+import sklearn
 import warnings
 
 
@@ -51,3 +53,10 @@ def mean_absolute_scaled_error(training_series, naive_training_series, testing_s
 
     errors = np.abs(testing_series - prediction_series)
     return errors.mean() / d
+
+
+def rmse(true, pred):
+    """
+    Computes square of mean squared error metric on true and predicted inputs
+    """
+    return math.sqrt(sklearn.metrics.mean_squared_error(true, pred))

@@ -1,8 +1,20 @@
 # Batch Learning Forecasting Component
 
-The component enables using external predictive models from  [Scikit Learn](http://scikit-learn.org/stable/index.html) and [PyTorch](https://pytorch.org/) library (for example [Random Forest Regressor](http://scikit-learn.org/stable/modules/generated/sklearn.ensemble.RandomForestRegressor.html)) implementation in a streaming scenario. Fitting, saving, loading and live prediction are enabled. Live predictions work via Kafka streams (reading feature vectors from Kafka and writing predictions to Kafka).
+The component enables using external predictive models from [PyTorch](https://pytorch.org/) 
+and [Scikit Learn](http://scikit-learn.org/stable/index.html) library 
+(for example [Random Forest Regressor](http://scikit-learn.org/stable/modules/generated/sklearn.ensemble.RandomForestRegressor.html)) 
+implementation in a streaming scenario. Fitting, saving, loading and live prediction are enabled. Live predictions work 
+via Kafka streams (reading feature vectors from Kafka and writing predictions to Kafka).
 
-The predictive model is designed in an decentralized fashion, meaning that several instances (submodels) will be created and used for each specific sensor and horizon (`#submodels = #sensors * #horizons`). Decentralized architecture enables parallelization.
+PyTorch models can have with an additional hidden layer that can process missing 
+data by replacing typical neuron's response in by its expected value using a Gaussian mixture model (GMM). The method is an 
+implementation from paper
+[Processing of missing data by neural networks](https://arxiv.org/abs/1805.07405).
+Original implementation in tensorflow is available on [this repository](https://github.com/lstruski/Processing-of-missing-data-by-neural-networks). 
+
+The predictive model is designed in an decentralized fashion, meaning that several instances (submodels)
+will be created and used for each specific sensor and horizon (`#submodels = #sensors * #horizons`). 
+Decentralized architecture enables parallelization.
 
 The code is available in the `src/` directory.
 
@@ -18,15 +30,17 @@ The code is available in the `src/` directory.
 | `-s` | `--save` | save model to file |
 | `-l` | `--load` | load model from file |
 | `-p` | `--predict` | start live predictions (via Kafka) |
+| `-w` | `--watchdog` | start watchdog pinging |
 
 #### Config file:
-Config file specifies the Kafka server address, which scikit algorithm to use, prediction horizons and senssors for which the model will be learned/loaded/saved/predicted. Config files are stored in `src/config/`.
+Config file specifies the Kafka server address, which algorithm to use, prediction horizons and sensors for which the model will be learned/loaded/saved/predicted. Config files are stored in `src/config/`.
 
-Parameters:
+General Parameters:
 
 | Name | Type | Default | Description |
 | --- | --- | --- | --- |
-| **prediction_horizons**| list(integer) | | List of prediction horizons (in hours) for which the model will be trained to predict for.|
+| **prediction_horizons**| list(integer) | | List of prediction horizons (in units specified in time_offset) for which the model will be trained to predict for.|
+| **time_offset**| string | H | [String alias](https://pandas.pydata.org/pandas-docs/stable/user_guide/timeseries.html#offset-aliases) to define the data time offsets. The aliases used in training and topic names are lowercase for backwards compatibility.|
 | **sensors**| list(string) | | List of sensors for which this specific instance will train the models and will be making predictions.|
 | **bootstrap_servers**| string or list(string)|  | String (or list of `host[:port]` strings) that the consumer should contact to bootstrap initial cluster metadata.|
 | **algorithm**| string | `torch` | String as either a scikit-learn model constructor with initialization parameters or a string `torch` to train using a pre defined neural network using PyTorch with architecture: \[torch.nn.Linear, torch.nn.ReLU, torch.nn.Linear\],|
@@ -34,11 +48,31 @@ Parameters:
 | **evaluation_split_point**| float | 0.8 | Define training and testing splitting point in the dataset, for model evaluation during learning phase (fit takes twice as long time).|
 | **retrain_period**| integer | None | A number of received samples after which the model will be re-trained. This is an optional parameter. If it is not specified no re-training will be done.|
 | **samples_for_retrain**| integer | None | A number of samples that will be used for re-training. If retrain_period is not specified this parameter will be ignored. This is an optional parameter. If it is not specified (and retrain_period is) the re-train will be done on all samples received since the component was started.|
-| **time_offset**| string | H | [String alias](https://pandas.pydata.org/pandas-docs/stable/user_guide/timeseries.html#offset-aliases) to define the data time offsets. The aliases used in training and topic names are lowercase for backwards compatibility.|
+| **watchdog_path**| string | None | Watchdog path. |
+| **watchdog_interval**| integer | 60 | Delay in seconds between each Watchdog ping |
+| **watchdog_url**| string | `localhost` | Watchdog url. |
+| **watchdog_port**| integer | 3001 | Watchdog port. |
+PyTorch parameters:
+
+| Name | Type | Default | Description |
+| --- | --- | --- | --- |
 | **learning_rate**| float| 4E-5 | Learning rate for the torch model.|
 | **batch_size**| integer | 64 | Size of training batches for torch model.|
 | **training_rounds**| integer | 100 | Training rounds for torch model.|
 | **num_workers**| integer| 1 | Number of workers for torch model.|
+
+GMM Layer parameters:
+
+| Name | Type | Default | Description |
+| --- | --- | --- | --- |
+| **gmm_layer**| boolean| False | If `true` the gmm layer is added to the model. |
+| **initial_imputer**| string | `simple` | Options are `simple` or `iterative` which uses either sklearn [SimpleImputer](https://scikit-learn.org/stable/modules/generated/sklearn.impute.SimpleImputer.html) or [IterativeImputer](https://scikit-learn.org/stable/modules/generated/sklearn.impute.IterativeImputer.html) |
+| **max_iter**| integer| 15 | If the iterative imputer is chosen, this arguments defines maximum number of iterations for it.|
+| **n_gmm**| integer| 5 | Number of components of GaussianMixture. If n_gmm is set to -1, then all values between min_n_gmm and max_n_gmm are checked and the one with the best BIC score is chosen. |
+| **min_n_gmm**| integer| 1 | Minimum number of components for GMM if search is enabled. |
+| **max_n_gmm**| integer| 10 | Maximum number of components for GMM if search is enabled.|
+| **gmm_seed**| integer| None | Random state seed for GMM. |
+| **verbose**| boolean| False | If set to `True` the progress and results of n_gmm parameter search is displayed.|
                  
 Example of config file:
 ```json
