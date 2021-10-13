@@ -52,6 +52,7 @@ General Parameters:
 | **watchdog_interval**| integer | 60 | Delay in seconds between each Watchdog ping |
 | **watchdog_url**| string | `localhost` | Watchdog url. |
 | **watchdog_port**| integer | 3001 | Watchdog port. |
+
 PyTorch parameters:
 
 | Name | Type | Default | Description |
