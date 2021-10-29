@@ -62,7 +62,7 @@ class PredictiveModel:
 
         self.algorithm = algorithm
         if algorithm == "torch":
-            self.model = self.TorchNetwork(self)
+            self.model = TorchNetwork(self)
         else:
             self.model = eval(self.algorithm)
         self.sensor = sensor
