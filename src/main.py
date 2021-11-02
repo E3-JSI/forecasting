@@ -5,66 +5,61 @@ import sys
 import json
 import time
 import os.path
-import sklearn
 import threading
 import requests
-
-# adding lib subdirectory
-sys.path.insert(0,'./lib')
-
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import Ridge
-import joblib
-import regression_metrics as additional_metrics
+import sklearn.metrics
+import traceback
 
 from kafka import KafkaConsumer
 from kafka import KafkaProducer
-import numpy as np
-import pandas as pd
+
+sys.path.insert(0, './lib')
 from predictive_model import PredictiveModel
 
-def get_model_file_name(sensor, horizon):
+
+def get_model_file_name(sensor, horizon, time_period='h'):
     subdir = 'models'
     if not os.path.isdir(subdir):
         os.makedirs(subdir)
 
-    filename = "model_{}_{}h".format(sensor, horizon)
+    filename = "model_{}_{}{}".format(sensor, horizon, time_period)
     filepath = os.path.join(subdir, filename)
 
     return filepath
 
-def get_data_file_name(sensor, horizon):
+
+def get_data_file_name(sensor, horizon, time_period='h'):
     subdir = '../../data/fused'
     if not os.path.isdir(subdir):
         os.makedirs(subdir)
 
-    filename = "{}_{}h.json".format(sensor, horizon)
+    filename = "{}_{}{}.json".format(sensor, horizon, time_period)
     filepath = os.path.join(subdir, filename)
 
     return filepath
 
-def get_input_data_topics(sensors, horizons):
+
+def get_input_data_topics(sensors, horizons, time_period):
     topics = []
     for sensor in sensors:
         for horizon in horizons:
-            topics.append("features_{}_{}h".format(sensor, horizon))
+            topics.append("features_{}_{}{}".format(sensor, horizon, time_period))
 
     return topics
 
-def ping_watchdog():
-    interval = 60 # ping interval in seconds
-    url = "localhost"
-    port= 3001
-    path= "/ping?id=5&secret=b9347c25aba4d3ba6e8f61d05fd1c011"
 
+def ping_watchdog(path, watchdog_interval=60, watchdog_url='localhost', watchdog_port=3001, **kwargs):
     try:
-        r = requests.get("http://{}:{}{}".format(url, port, path))
-    except requests.exceptions.RequestException as e:  # This is the correct syntax
-        print(e)
+        requests.get("http://{}:{}{}".format(watchdog_url, watchdog_port, path))
+    except requests.exceptions.RequestException:
+        traceback.print_exc()
     else:
         print('Successful ping at ' + time.ctime())
 
-    threading.Timer(interval, ping_watchdog).start()
+    threading.Timer(watchdog_interval, ping_watchdog).start()
+
 
 def main():
     parser = argparse.ArgumentParser(description="Modeling component")
@@ -81,6 +76,7 @@ def main():
         "-f",
         "--fit",
         action='store_true',
+        dest="fit",
         help=u"Learning the model from dataset in subfolder '../../data/fused'",
     )
 
@@ -115,60 +111,48 @@ def main():
     )
 
     # Display help if no arguments are defined
-    if len(sys.argv)==1:
+    if len(sys.argv) == 1:
         parser.print_help()
         sys.exit(1)
 
     # Parse input arguments
     args = parser.parse_args()
 
-    #Read config file
+    # Read config file
     with open("config/" + args.config) as data_file:
         conf = json.load(data_file)
 
     # Initialize models
     print("\n=== Init phase ===")
 
-    models = {}
-    algorithm = conf['algorithm']
-    sensors = conf['sensors']
-    horizons = conf['prediction_horizons']
-    evaluation_period = conf['evaluation_period']
-    evaluation_split_point = conf['evaluation_split_point']
-    error_metrics = [
-        {'name': "R2 Score", 'short': "r2", 'function': sklearn.metrics.r2_score},
-        {'name': "Mean Absolute Error", 'short': "mae", 'function': sklearn.metrics.mean_absolute_error},
-        {'name': "Mean Squared Error", 'short': "mse", 'function': sklearn.metrics.mean_squared_error},
-        {'name': "Root Mean Squared Error", 'short': "rmse", 'function': None},
-        {'name': "Mean Absolute Percentage Error", 'short': "mape", 'function': additional_metrics.mean_absolute_percentage_error}
-    ]
+    models = dict()
+    kwargs = dict()
+    sensors, horizons = None, None
+    time_offset = 'h'
 
-    # Ifretrain period is defined read it from conf otherwise use None
-    if("retrain_period" in conf):
-        retrain_period = conf["retrain_period"]
-        if("samples_for_retrain" in conf):
-            samples_for_retrain = conf["samples_for_retrain"]
+    if 'time_offset' in conf:
+        time_offset = conf['time_offset'].lower()
+
+    for key in conf:
+        if 'sensors' == key:
+            sensors = conf[key]
+        elif 'prediction_horizons' == key:
+            horizons = conf[key]
         else:
-            samples_for_retrain = None
-    else:
-        retrain_period = None
-        samples_for_retrain = None
+            kwargs[key] = conf[key]
+            if 'time_offset' == key:
+                time_offset = conf['time_offset'].lower()
 
     for sensor in sensors:
         models[sensor] = {}
         for horizon in horizons:
-            models[sensor][horizon] = PredictiveModel(algorithm, sensor,
+            models[sensor][horizon] = PredictiveModel(sensor,
                                                       horizon,
-                                                      evaluation_period,
-                                                      error_metrics,
-                                                      evaluation_split_point,
-                                                      retrain_period,
-                                                      samples_for_retrain,
-                                                      os.path.join('.', 'test', 'retrain_data'))
-            print("Initializing model_{}_{}h".format(sensor, horizon))
+                                                      **kwargs)
+            print("Initializing model_{}_{}{}".format(sensor, horizon, time_offset))
 
     # Model learning
-    if (args.fit):
+    if args.fit:
         print("\n=== Learning phase ===")
 
         for sensor in sensors:
@@ -177,13 +161,17 @@ def main():
                 data = get_data_file_name(sensor, horizon)
                 try:
                     score = models[sensor][horizon].fit(data)
-                except Exception as e:
-                    print(e)
-                end = time.time()
-                print("Model[{0}_{1}h] training time: {2:.1f}s, evaluations: {3})".format(sensor, horizon, end-start, str(score)))
+                    end = time.time()
+                    print("Model[{0}_{1}{2}] training time: {3:.1f}s, evaluations: {4})".format(sensor,
+                                                                                                horizon,
+                                                                                                time_offset,
+                                                                                                end - start,
+                                                                                                str(score)))
+                except Exception:
+                    traceback.print_exc()
 
     # Model saving
-    if (args.save):
+    if args.save:
         print("\n=== Saving phase ===")
 
         for sensor in sensors:
@@ -194,7 +182,7 @@ def main():
                 print("Saved model", filename)
 
     # Model loading
-    if (args.load):
+    if args.load:
         print("\n=== Loading phase ===")
 
         for sensor in sensors:
@@ -204,16 +192,19 @@ def main():
                 model.load(filename)
                 print("Loaded model", filename)
 
-    if (args.watchdog):
-        print("\n=== Watchdog started ===")
-        ping_watchdog()
+    if args.watchdog:
+        if "watchdog_path" in conf.keys:
+            print("\n=== Watchdog started ===")
+            ping_watchdog(conf.watchdog_path, **conf)
+        else:
+            print("Watchdog path missing")
 
     # Live predictions
-    if (args.predict):
+    if args.predict:
         print("\n=== Predictions phase ===")
 
         # Start Kafka consumer
-        topics = get_input_data_topics(sensors, horizons)
+        topics = get_input_data_topics(sensors, horizons, time_offset)
         consumer = KafkaConsumer(bootstrap_servers=conf['bootstrap_servers'])
         consumer.subscribe(topics)
         print("Subscribed to topics: ", topics)
@@ -227,12 +218,12 @@ def main():
                 rec = eval(msg.value)
                 timestamp = rec['timestamp']
                 ftr_vector = rec['ftr_vector']
-                measurement = ftr_vector[0] # first feature is the target measurement
+                measurement = ftr_vector[0]  # first feature is the target measurement
 
                 topic = msg.topic
 
                 # extract sensor and horizon info from topic name
-                horizon = int(topic.split("_")[-1][:-1])
+                horizon = int(topic.split("_")[-1][:-len(time_offset)])
                 sensor = topic.split("_")[-2]
 
                 # predictions
@@ -247,7 +238,7 @@ def main():
                           'predictability': model.predictability}
 
                 # evaluation
-                output = model.evaluate(output, measurement) # appends evaluations to output
+                output = model.evaluate(output, measurement)  # appends evaluations to output
 
                 # send result to kafka topic
                 output_topic = "predictions_{}".format(sensor)
@@ -256,12 +247,13 @@ def main():
                 print(output_topic + ": " + str(output))
 
                 try:
-                    record_metadata = future.get(timeout=10)
+                    future.get(timeout=10)
                 except Exception as e:
                     print('Producer error: ' + str(e))
 
             except Exception as e:
                 print('Consumer error: ' + str(e))
+
 
 if __name__ == '__main__':
     main()
